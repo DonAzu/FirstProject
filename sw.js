@@ -1,5 +1,5 @@
 // Bei Änderungen an den Dateien die Versionsnummer erhöhen, damit das Handy neu lädt.
-const CACHE = 'arbeitszeitrechner-v1';
+const CACHE = 'arbeitszeitrechner-v2';
 const FILES = [
   './',
   'index.html',

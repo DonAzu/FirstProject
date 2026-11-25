@@ -18,6 +18,7 @@
       --accent: #1f6feb;
       --accent-text: #ffffff;
       --result-bg: #e8f0fe;
+      --stop: #d73a49;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -29,6 +30,7 @@
         --accent: #4c8dff;
         --accent-text: #0f1216;
         --result-bg: #1a2638;
+        --stop: #f0606d;
       }
     }
     * { box-sizing: border-box; }
@@ -88,21 +90,77 @@
       margin-top: 4px;
     }
     .result .note { color: var(--muted); font-size: 0.9rem; min-height: 1.2em; }
-    button {
-      display: block;
-      width: 100%;
+
+    /* Dini */
+    .dini {
+      display: flex;
+      align-items: center;
+      gap: 16px;
       margin-top: 20px;
+    }
+    .dini svg {
+      flex: none;
+      width: 90px;
+      height: 60px;
+      shape-rendering: crispEdges;
+    }
+    .bubble {
+      position: relative;
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    }
+    .bubble::before {
+      content: "";
+      position: absolute;
+      left: -7px;
+      top: 50%;
+      width: 12px;
+      height: 12px;
+      background: var(--card);
+      border-left: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      transform: translateY(-50%) rotate(45deg);
+    }
+    .bubble .say { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .bubble .sub { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
+
+    /* Buttons */
+    button {
       font: inherit;
-      font-size: 1.1rem;
       font-weight: 600;
-      color: var(--accent-text);
-      background: var(--accent);
       border: 0;
       border-radius: 12px;
-      padding: 14px;
       cursor: pointer;
     }
     button:active { opacity: 0.85; }
+    .btn-wide {
+      display: block;
+      width: 100%;
+      margin-top: 20px;
+      font-size: 1.1rem;
+      color: var(--accent-text);
+      background: var(--accent);
+      padding: 14px;
+    }
+    .btn-secondary {
+      margin-top: 12px;
+      color: var(--accent);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+    .btn-small {
+      width: 7.5rem;
+      font-size: 1.1rem;
+      color: var(--accent-text);
+      background: var(--accent);
+      border-radius: 10px;
+      padding: 10px 6px;
+    }
+    .btn-small.running { background: var(--stop); color: #fff; }
   </style>
 </head>
 <body>
@@ -122,6 +180,10 @@
       <label for="pause">Pause<small>Std:Min</small></label>
       <input id="pause" type="text" inputmode="numeric" autocomplete="off" placeholder="0:45">
     </div>
+    <div class="row">
+      <label for="pauseBtn">Pause messen<small id="pauseInfo"></small></label>
+      <button id="pauseBtn" class="btn-small" type="button">Start</button>
+    </div>
   </div>
 
   <div class="result">
@@ -130,7 +192,16 @@
     <div class="note" id="note"></div>
   </div>
 
-  <button id="reset" type="button">Reset</button>
+  <div class="dini">
+    <svg id="diniIcon" viewBox="0 0 18 12" role="img" aria-label="Dini, ein kleiner orangener Langhals-Dino"></svg>
+    <div class="bubble" aria-live="polite">
+      <div class="say" id="diniSay">…</div>
+      <div class="sub" id="diniSub"></div>
+    </div>
+  </div>
+  <button id="refresh" class="btn-wide btn-secondary" type="button">↻ Aktualisieren</button>
+
+  <button id="reset" class="btn-wide" type="button">Reset</button>
 </main>
 
 <script>
@@ -143,14 +214,24 @@
   const $pause = document.getElementById('pause');
   const $leave = document.getElementById('leave');
   const $note = document.getElementById('note');
+  const $pauseBtn = document.getElementById('pauseBtn');
+  const $pauseInfo = document.getElementById('pauseInfo');
+  const $diniSay = document.getElementById('diniSay');
+  const $diniSub = document.getElementById('diniSub');
 
   const pad = n => String(n).padStart(2, '0');
   const fmt = mins => `${Math.floor(mins / 60)}:${pad(mins % 60)}`;
+  const fmtHHMM = mins => `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`;
+  const clock = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const nowHHMM = () => clock(new Date());
 
-  function nowHHMM() {
-    const d = new Date();
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
+  // Pausenmessung
+  let pauseStart = null;      // Zeitstempel (ms) der laufenden Pause, sonst null
+  let lastPause = null;       // { start, stop, mins } der zuletzt gemessenen Pause
+  let pauseMeasured = false;  // erste Messung ersetzt den Standardwert, weitere werden addiert
+
+  // Gehzeit in Minuten ab Mitternacht des Ankunftstags (kann > 1440 sein)
+  let leaveTotal = null;
 
   // "8:00", "8", "0:45", "845" (=8:45), "45" wird als Stunden gelesen -> nur bis 24 plausibel
   function parseDuration(str) {
@@ -178,7 +259,8 @@
   function save() {
     try {
       localStorage.setItem(KEY, JSON.stringify({
-        arrival: $arrival.value, work: $work.value, pause: $pause.value
+        arrival: $arrival.value, work: $work.value, pause: $pause.value,
+        pauseStart, lastPause, pauseMeasured
       }));
     } catch {}
   }
@@ -191,15 +273,72 @@
     $pause.classList.toggle('invalid', p === null);
 
     if (a === null || w === null || p === null) {
+      leaveTotal = null;
       $leave.textContent = '--:--';
       $note.textContent = 'Bitte gültige Werte eingeben';
+    } else {
+      leaveTotal = a + w + p;
+      const day = Math.floor(leaveTotal / 1440);
+      const t = leaveTotal % 1440;
+      $leave.textContent = `${pad(Math.floor(t / 60))}:${pad(t % 60)}`;
+      $note.textContent = day > 0 ? `+${day} Tag` : '';
+    }
+    updateDini();
+  }
+
+  // Countdown: wird nur bei Eingabeänderungen und per Refresh-Button neu berechnet
+  function updateDini() {
+    const now = new Date();
+    const stand = `Stand ${clock(now)}`;
+    if (leaveTotal === null) {
+      $diniSay.textContent = 'Dini wartet auf gültige Werte …';
+      $diniSub.textContent = stand;
       return;
     }
-    const total = a + w + p;
-    const day = Math.floor(total / 1440);
-    const t = total % 1440;
-    $leave.textContent = `${pad(Math.floor(t / 60))}:${pad(t % 60)}`;
-    $note.textContent = day > 0 ? `+${day} Tag` : '';
+    let n = now.getHours() * 60 + now.getMinutes();
+    const a = parseTime($arrival.value);
+    if (a - n > 12 * 60) n += 1440;   // seit der Ankunft ist Mitternacht vorbei
+    const diff = leaveTotal - n;
+    if (diff > 0) {
+      $diniSay.textContent = `In ${fmtHHMM(diff)} ist Dini-Zeit!`;
+      $diniSub.textContent = stand;
+    } else {
+      $diniSay.textContent = 'Es ist Dini-Zeit!';
+      $diniSub.textContent = diff < 0 ? `+${fmtHHMM(-diff)} drüber · ${stand}` : stand;
+    }
+  }
+
+  function renderPause() {
+    const running = pauseStart !== null;
+    $pauseBtn.textContent = running ? 'Stopp' : 'Start';
+    $pauseBtn.classList.toggle('running', running);
+    if (running) {
+      $pauseInfo.textContent = `läuft seit ${clock(new Date(pauseStart))}`;
+    } else if (lastPause) {
+      $pauseInfo.textContent =
+        `zuletzt ${clock(new Date(lastPause.start))}–${clock(new Date(lastPause.stop))} (+${fmt(lastPause.mins)})`;
+    } else {
+      $pauseInfo.textContent = '';
+    }
+  }
+
+  function togglePause() {
+    const now = Date.now();
+    if (pauseStart === null) {
+      pauseStart = now;                                   // Pause_Start
+    } else {
+      const pauseStop = now;                              // Pause_Stopp
+      const mins = Math.max(0, Math.round((pauseStop - pauseStart) / 60000));
+      const current = parseDuration($pause.value);
+      const base = pauseMeasured && current !== null ? current : 0;
+      $pause.value = fmt(base + mins);
+      lastPause = { start: pauseStart, stop: pauseStop, mins };
+      pauseMeasured = true;
+      pauseStart = null;
+      calc();
+    }
+    renderPause();
+    save();
   }
 
   function normalize(input) {
@@ -211,9 +350,34 @@
     $arrival.value = nowHHMM();
     $work.value = DEFAULT_WORK;
     $pause.value = DEFAULT_PAUSE;
+    pauseStart = null;
+    lastPause = null;
+    pauseMeasured = false;
+    renderPause();
     save();
     calc();
   }
+
+  // Dini als Pixel-Art zeichnen: o = Körper, d = Flecken, e = Auge
+  const DINI = [
+    '............ooo...',
+    '............oeoo..',
+    '............oooo..',
+    '............oo....',
+    '...........oo.....',
+    '...........oo.....',
+    '......ooooooo.....',
+    '....odoodoooooo...',
+    '..ooooooooooooo...',
+    '.oo.oooooooooo....',
+    'oo...oo....oo.....',
+    '.....oo....oo.....'
+  ];
+  const DINI_COLORS = { o: '#e8833a', d: '#b85a1c', e: '#1b1f24' };
+  document.getElementById('diniIcon').innerHTML = DINI.flatMap((line, y) =>
+    [...line].map((c, x) => DINI_COLORS[c]
+      ? `<rect x="${x}" y="${y}" width="1" height="1" fill="${DINI_COLORS[c]}"/>` : '')
+  ).join('');
 
   // Start
   const saved = load();
@@ -221,6 +385,10 @@
     $arrival.value = saved.arrival || nowHHMM();
     $work.value = saved.work || DEFAULT_WORK;
     $pause.value = saved.pause || DEFAULT_PAUSE;
+    pauseStart = saved.pauseStart ?? null;
+    lastPause = saved.lastPause ?? null;
+    pauseMeasured = !!saved.pauseMeasured;
+    renderPause();
     calc();
   } else {
     reset();
@@ -233,6 +401,8 @@
     el.addEventListener('blur', () => { normalize(el); save(); });
     el.addEventListener('focus', () => el.select());
   }
+  $pauseBtn.addEventListener('click', togglePause);
+  document.getElementById('refresh').addEventListener('click', updateDini);
   document.getElementById('reset').addEventListener('click', reset);
 
   if ('serviceWorker' in navigator) {
