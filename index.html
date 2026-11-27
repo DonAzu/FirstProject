@@ -19,6 +19,8 @@
       --accent-text: #ffffff;
       --result-bg: #e8f0fe;
       --stop: #d73a49;
+      --plus: #1a7f37;
+      --minus: #d73a49;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -31,6 +33,8 @@
         --accent-text: #0f1216;
         --result-bg: #1a2638;
         --stop: #f0606d;
+        --plus: #4ac26b;
+        --minus: #f0606d;
       }
     }
     * { box-sizing: border-box; }
@@ -161,12 +165,53 @@
       padding: 10px 6px;
     }
     .btn-small.running { background: var(--stop); color: #fff; }
+
+    /* Reiter */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 4px;
+      margin-bottom: 20px;
+    }
+    .tabs button {
+      flex: 1;
+      font-size: 1rem;
+      padding: 10px;
+      color: var(--muted);
+      background: transparent;
+      border-radius: 10px;
+    }
+    .tabs button[aria-selected="true"] { color: var(--accent-text); background: var(--accent); }
+
+    /* Woche */
+    .plus { color: var(--plus); }
+    .minus { color: var(--minus); }
+    .week .idx { font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .week .row.sum { border-top-width: 2px; }
+    .week .sum-value {
+      width: 7.5rem;
+      text-align: center;
+      font-size: 1.4rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .hint { color: var(--muted); font-size: 0.85rem; margin: 12px 4px 0; }
+    .version { text-align: center; margin-top: 20px; font-size: 0.75rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>Arbeitszeitrechner</h1>
 
+  <nav class="tabs" role="tablist">
+    <button id="tabToday" role="tab" aria-selected="true" aria-controls="pageToday" type="button">Heute</button>
+    <button id="tabWeek" role="tab" aria-selected="false" aria-controls="pageWeek" type="button">Woche</button>
+  </nav>
+
+  <section id="pageToday" role="tabpanel">
   <div class="card">
     <div class="row">
       <label for="arrival">Ankunft</label>
@@ -201,7 +246,20 @@
       <div class="sub" id="diniSub"></div>
     </div>
   </div>
-  <button id="refresh" class="btn-wide btn-secondary" type="button">↻ Aktualisieren</button>
+  <button id="checkout" class="btn-wide btn-secondary" type="button">Check Out</button>
+  <p class="hint version">Version v4</p>
+  </section>
+
+  <section id="pageWeek" role="tabpanel" hidden>
+    <div class="card week">
+      <div class="row sum" id="sumRow">
+        <span class="idx">Summe</span>
+        <div id="weekSum" class="sum-value">0:00</div>
+      </div>
+    </div>
+    <p class="hint">Einträge lassen sich bearbeiten: z. B. +0:15 oder -0:30. Leeres Feld = kein Eintrag.</p>
+    <button id="weekReset" class="btn-wide" type="button">Reset</button>
+  </section>
 </main>
 
 <script>
@@ -286,7 +344,16 @@
     updateDini();
   }
 
-  // Countdown: wird nur bei Eingabeänderungen und per Refresh-Button neu berechnet
+  // Aktuelle Minute relativ zur Mitternacht des Ankunftstags
+  function minutesNow(now) {
+    let n = now.getHours() * 60 + now.getMinutes();
+    const a = parseTime($arrival.value);
+    const crossed = a !== null && a - n > 12 * 60;   // seit der Ankunft ist Mitternacht vorbei
+    if (crossed) n += 1440;
+    return { n, crossed };
+  }
+
+  // Countdown: wird bei Eingabeänderungen, Check-out und beim Zurückkehren in die App neu berechnet
   function updateDini() {
     const now = new Date();
     const stand = `Stand ${clock(now)}`;
@@ -295,10 +362,7 @@
       $diniSub.textContent = stand;
       return;
     }
-    let n = now.getHours() * 60 + now.getMinutes();
-    const a = parseTime($arrival.value);
-    if (a - n > 12 * 60) n += 1440;   // seit der Ankunft ist Mitternacht vorbei
-    const diff = leaveTotal - n;
+    const diff = leaveTotal - minutesNow(now).n;
     if (diff > 0) {
       $diniSay.textContent = `In ${fmtHHMM(diff)} ist Dini-Zeit!`;
       $diniSub.textContent = stand;
@@ -358,6 +422,130 @@
     calc();
   }
 
+  // ---------- Wochenübersicht ----------
+  // Gespeichert: { week: 'YYYY-MM-DD' (Montag), days: { 1..5: Bilanz in Minuten } }
+  const WEEK_KEY = 'arbeitszeitrechner-woche';
+  const $weekSum = document.getElementById('weekSum');
+  const $sumRow = document.getElementById('sumRow');
+  let week = null;
+
+  const fmtSigned = m => m === 0 ? '0:00' : (m > 0 ? '+' : '−') + fmt(Math.abs(m));
+  const dateKey = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const mondayOf = d => dateKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - (d.getDay() + 6) % 7));
+  const setSign = (el, v) => {
+    el.classList.toggle('plus', v > 0);
+    el.classList.toggle('minus', v < 0);
+  };
+
+  // "+0:15", "-0:30", "−1:05", "0:10" -> Minuten; ungültig -> null
+  function parseSigned(str) {
+    const m = /^([+\-−]?)\s*(\S.*)$/.exec(str.trim());
+    if (!m) return null;
+    const v = parseDuration(m[2]);
+    if (v === null) return null;
+    return m[1] && m[1] !== '+' ? -v : v;
+  }
+
+  function saveWeek() {
+    try { localStorage.setItem(WEEK_KEY, JSON.stringify(week)); } catch {}
+  }
+
+  // Neue Woche oder Wochenende -> Einträge verwerfen
+  function checkWeek() {
+    const now = new Date();
+    const monday = mondayOf(now);
+    const weekend = now.getDay() === 0 || now.getDay() === 6;
+    if (!week || !week.days || week.week !== monday || (weekend && Object.keys(week.days).length)) {
+      week = { week: monday, days: {} };
+      saveWeek();
+      renderWeek();
+    }
+  }
+
+  const weekInputs = {};
+  for (let i = 1; i <= 5; i++) {
+    $sumRow.insertAdjacentHTML('beforebegin', `
+      <div class="row">
+        <label class="idx" for="day${i}">${i}</label>
+        <input id="day${i}" type="text" autocomplete="off" placeholder="–">
+      </div>`);
+    const inp = document.getElementById(`day${i}`);
+    weekInputs[i] = inp;
+    inp.addEventListener('input', () => {
+      const s = inp.value.trim();
+      if (s === '') {
+        delete week.days[i];
+      } else {
+        const v = parseSigned(s);
+        if (v === null) { inp.classList.add('invalid'); return; }
+        week.days[i] = v;
+      }
+      inp.classList.remove('invalid');
+      setSign(inp, week.days[i] ?? 0);
+      saveWeek();
+      renderSum();
+    });
+    inp.addEventListener('blur', renderWeek);   // normalisieren, Ungültiges verwerfen
+    inp.addEventListener('focus', () => inp.select());
+  }
+
+  function renderSum() {
+    const sum = Object.values(week.days).reduce((s, v) => s + v, 0);
+    $weekSum.textContent = fmtSigned(sum);
+    setSign($weekSum, sum);
+  }
+
+  function renderWeek() {
+    if (!week) return;
+    for (let i = 1; i <= 5; i++) {
+      const inp = weekInputs[i];
+      const v = week.days[i];
+      if (document.activeElement !== inp) inp.value = v === undefined ? '' : fmtSigned(v);
+      inp.classList.remove('invalid');
+      setSign(inp, v ?? 0);
+    }
+    renderSum();
+  }
+
+  function resetWeek() {
+    if (!confirm('Alle Einträge der Woche löschen?')) return;
+    week = { week: mondayOf(new Date()), days: {} };
+    saveWeek();
+    renderWeek();
+  }
+
+  function checkOut() {
+    if (pauseStart !== null) togglePause();   // laufende Pause beenden und einrechnen
+    calc();
+    if (leaveTotal === null) return;
+    const now = new Date();
+    const { n, crossed } = minutesNow(now);
+    const day = new Date(now);
+    if (crossed) day.setDate(day.getDate() - 1);   // Arbeitstag = Ankunftstag
+    const idx = day.getDay();
+    if (idx === 0 || idx === 6) {
+      $diniSub.textContent = `Wochenende – nichts eingetragen · Stand ${clock(now)}`;
+      return;
+    }
+    checkWeek();
+    const bal = n - leaveTotal;
+    week.days[idx] = bal;
+    saveWeek();
+    renderWeek();
+    $diniSub.textContent = `Check-out: ${fmtSigned(bal)} für Tag ${idx} eingetragen`;
+  }
+
+  // ---------- Reiter ----------
+  const $tabToday = document.getElementById('tabToday');
+  const $tabWeek = document.getElementById('tabWeek');
+  function showTab(isWeek) {
+    $tabToday.setAttribute('aria-selected', String(!isWeek));
+    $tabWeek.setAttribute('aria-selected', String(isWeek));
+    document.getElementById('pageToday').hidden = isWeek;
+    document.getElementById('pageWeek').hidden = !isWeek;
+    if (isWeek) { checkWeek(); renderWeek(); } else updateDini();
+  }
+
   // Dini als Pixel-Art zeichnen: o = Körper, d = Flecken, e = Auge
   const DINI = [
     '............ooo...',
@@ -380,6 +568,10 @@
   ).join('');
 
   // Start
+  try { week = JSON.parse(localStorage.getItem(WEEK_KEY)) || null; } catch { week = null; }
+  checkWeek();
+  renderWeek();
+
   const saved = load();
   if (saved) {
     $arrival.value = saved.arrival || nowHHMM();
@@ -402,8 +594,16 @@
     el.addEventListener('focus', () => el.select());
   }
   $pauseBtn.addEventListener('click', togglePause);
-  document.getElementById('refresh').addEventListener('click', updateDini);
+  document.getElementById('checkout').addEventListener('click', checkOut);
   document.getElementById('reset').addEventListener('click', reset);
+  document.getElementById('weekReset').addEventListener('click', resetWeek);
+  $tabToday.addEventListener('click', () => showTab(false));
+  $tabWeek.addEventListener('click', () => showTab(true));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    checkWeek();
+    updateDini();
+  });
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

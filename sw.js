@@ -1,5 +1,6 @@
 // Bei Änderungen an den Dateien die Versionsnummer erhöhen, damit das Handy neu lädt.
-const CACHE = 'arbeitszeitrechner-v3';
+// Die Anzeige "Version vX" unten in index.html dann ebenfalls anpassen.
+const CACHE = 'arbeitszeitrechner-v4';
 const FILES = [
   './',
   'index.html',
